@@ -564,7 +564,8 @@
         DIG_RESTING: 13,
         NURSE_TRANSPORT: 14,
         TIRED_RETURN: 15,
-        SLEEPING: 16
+        SLEEPING: 16,
+        DIG_ACTION: 17
     };
 
     // 5가지 카스트 (부화 시 고정)
@@ -675,6 +676,7 @@
                 case W_STATE.NURSE_TRANSPORT: this._doNurseTransport(dt, grid, colony); break;
                 case W_STATE.TIRED_RETURN: this._doTiredReturn(dt, grid, colony); break;
                 case W_STATE.SLEEPING: this._doSleep(dt); break;
+                case W_STATE.DIG_ACTION: this._doDigAction(dt, grid, colony); break;
             }
         }
 
@@ -995,33 +997,51 @@
 
         // ── 먹이 창고 굴착 (Digger 전용) ──
         _doDigFoodChamber(dt, grid, colony, queen) {
-            // 여왕방에서 가로 5~8칸 옆에 먹이 창고 굴착
+            // 여왕방에서 가로 6칸 옆에 먹이 창고 굴착
             const chamberDir = queen.nestCol < grid.cols / 2 ? 1 : -1;
-            const targetCol = queen.nestCol + chamberDir * randInt(5, 8);
+            const targetCol = queen.nestCol + chamberDir * 6;
             const targetRow = queen.nestRow;
 
-            // 목표에 도달하면 그 자리에 방 파기
-            if (Math.abs(this.col - targetCol) < 2 && Math.abs(this.row - targetRow) < 2) {
-                // 주위를 파서 방 만들기
-                for (let dc = -2; dc <= 2; dc++) {
-                    for (let dr = -1; dr <= 0; dr++) {
-                        const c = this.col + dc, r = this.row + dr;
-                        if (grid.isDiggable(c, r)) grid.set(c, r, EMPTY);
+            // 1. 방 영역 내의 '흙' 찾기 (5x2)
+            let targetSoil = null;
+            let centerDist = Infinity;
+            for (let dc = -2; dc <= 2; dc++) {
+                for (let dr = -1; dr <= 0; dr++) {
+                    const c = targetCol + dc;
+                    const r = targetRow + dr;
+                    if (grid.isDiggable(c, r)) {
+                        const d = Math.abs(this.col - c) + Math.abs(this.row - r);
+                        if (d < centerDist) { centerDist = d; targetSoil = { c, r }; }
                     }
                 }
-                colony.foodChamber = { col: this.col, row: this.row };
-                colony.showEvent('📦 굴착개미가 먹이 창고를 만들었습니다!');
+            }
+
+            if (!targetSoil) {
+                if (!colony.foodChamber) {
+                    colony.foodChamber = { col: targetCol, row: targetRow };
+                    colony.showEvent('📦 굴착개미가 먹이 창고를 만들었습니다!');
+                }
                 this.state = W_STATE.IDLE;
-                this.waitTimer = 2000;
                 return;
             }
 
-            // 목표 방향으로 파며 이동
-            const dc = targetCol > this.col ? 1 : targetCol < this.col ? -1 : 0;
-            const dr = targetRow > this.row ? 1 : targetRow < this.row ? -1 : 0;
-            if (dc !== 0 && this.moveTo(this.col + dc, this.row, grid)) return;
-            if (dr !== 0 && this.moveTo(this.col, this.row + dr, grid)) return;
-            this._pickRandomWalkable(grid);
+            // 2. 타겟 흙으로 이동 또는 굴착
+            if (centerDist <= 1) {
+                this.state = W_STATE.DIG_ACTION;
+                this.returnState = W_STATE.DIG_FOOD_CHAMBER;
+                this.digTarget = targetSoil;
+                this.waitTimer = rand(1000, 2000);
+            } else {
+                const step = this._getBfsStep(targetSoil.c, targetSoil.r, grid);
+                if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                else {
+                    const dc = targetSoil.c > this.col ? 1 : -1;
+                    const dr = targetSoil.r > this.row ? 1 : -1;
+                    if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
+                    else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
+                    else this._pickRandomWalkable(grid);
+                }
+            }
         }
 
         // ── 경비 순찰 (Guard: 입구 근처) ──
@@ -1109,74 +1129,116 @@
             this._pickRandomWalkable(grid);
         }
 
+        // ── 굴착 수행 (공통 액션) ──
+        _doDigAction(dt, grid, colony) {
+            this.waitTimer -= dt;
+            if (this.waitTimer <= 0) {
+                if (this.digTarget && grid.isDiggable(this.digTarget.c, this.digTarget.r)) {
+                    grid.set(this.digTarget.c, this.digTarget.r, EMPTY);
+                    this.digCount++;
+                    this.energy -= 0.5;
+                    // 효과음 등 추가 가능
+                }
+                this.state = this.returnState || W_STATE.IDLE;
+            }
+        }
+
         // ── 보육방/휴식방 굴착 (Digger) ──
         _doDigNursery(dt, grid, colony, queen) {
-            // 보육방: 지표면에서 약간 깊은 따뜻한 곳 (Food보다 깊게)
             const targetRow = grid.surfaceRow + 10;
-            const targetCol = Math.floor(grid.cols / 2) + 5; // 약간 옆으로
+            const targetCol = Math.floor(grid.cols / 2) + 5;
 
-            if (!colony.nurseryChamber) {
-                // 아직 미완성
-                if (Math.abs(this.col - targetCol) <= 1 && Math.abs(this.row - targetRow) <= 1) {
-                    // 도착: 방 파기 (3x2)
-                    for (let r = targetRow - 1; r <= targetRow + 1; r++) {
-                        for (let c = targetCol - 1; c <= targetCol + 1; c++) {
-                            if (grid.isDiggable(c, r)) {
-                                grid.set(c, r, EMPTY);
-                                this.digCount++;
-                            }
-                        }
-                    }
-                    colony.nurseryChamber = { col: targetCol, row: targetRow };
-                    this.state = W_STATE.IDLE;
-                    colony.showEvent('👶 보육방이 건설되었습니다!');
-                } else {
-                    // 이동
-                    const step = this._getBfsStep(targetCol, targetRow, grid);
-                    if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
-                    else {
-                        // 직접 굴착 이동
-                        const dc = targetCol > this.col ? 1 : -1;
-                        const dr = targetRow > this.row ? 1 : -1;
-                        if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
-                        else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
-                        else this._pickRandomWalkable(grid);
+            // 1. 방 영역 내의 '흙' 찾기
+            let targetSoil = null;
+            let centerDist = Infinity;
+
+            for (let r = targetRow - 1; r <= targetRow + 1; r++) {
+                for (let c = targetCol - 1; c <= targetCol + 1; c++) {
+                    if (grid.isDiggable(c, r)) {
+                        // 중심에서 가까운 순? 아니면 그냥 발견 순?
+                        // 여기선 "개미에게서 가장 가까운" 흙을 찾자 (자연스러운 확장)
+                        const d = Math.abs(this.col - c) + Math.abs(this.row - r);
+                        // 단, 너무 멀면(방 반대편) 안될수도 있으니... 
+                        // 그냥 방의 흙 중 하나를 타겟팅
+                        if (d < centerDist) { centerDist = d; targetSoil = { c, r }; }
                     }
                 }
-                this.energy -= 0.2;
+            }
+
+            if (!targetSoil) {
+                // 당장 팔 흙이 없음 -> 방 완성 체크?
+                if (!colony.nurseryChamber) {
+                    colony.nurseryChamber = { col: targetCol, row: targetRow };
+                    colony.showEvent('👶 보육방이 건설되었습니다!');
+                }
+                this.state = W_STATE.IDLE;
+                return;
+            }
+
+            // 2. 타겟 흙으로 이동 또는 굴착
+            if (centerDist <= 1) {
+                // 바로 옆: 굴착 시작
+                this.state = W_STATE.DIG_ACTION;
+                this.returnState = W_STATE.DIG_NURSERY;
+                this.digTarget = targetSoil;
+                this.waitTimer = rand(1000, 2000); // 1~2초 굴착
+            } else {
+                // 이동
+                const step = this._getBfsStep(targetSoil.c, targetSoil.r, grid);
+                if (step) {
+                    this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                } else {
+                    // BFS 실패 시 (벽으로 막힘 등) -> 타겟 방향으로 직접 굴착 이동
+                    // (이동 중 굴착은 즉시 처리되지만 어쩔 수 없음, 방 내부 굴착이 메인)
+                    const dc = targetSoil.c > this.col ? 1 : -1;
+                    const dr = targetSoil.r > this.row ? 1 : -1;
+                    if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
+                    else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
+                    else this._pickRandomWalkable(grid);
+                }
             }
         }
 
         _doDigResting(dt, grid, colony, queen) {
-            // 휴식방: 가장 깊고 조용한 곳
             const targetRow = grid.rows - 6;
             const targetCol = Math.floor(grid.cols / 2) - 5;
 
-            if (!colony.restingChamber) {
-                if (Math.abs(this.col - targetCol) <= 1 && Math.abs(this.row - targetRow) <= 1) {
-                    for (let r = targetRow - 1; r <= targetRow + 1; r++) {
-                        for (let c = targetCol - 1; c <= targetCol + 1; c++) {
-                            if (grid.isDiggable(c, r)) {
-                                grid.set(c, r, EMPTY);
-                                this.digCount++;
-                            }
-                        }
-                    }
-                    colony.restingChamber = { col: targetCol, row: targetRow };
-                    this.state = W_STATE.IDLE;
-                    colony.showEvent('💤 휴식방이 건설되었습니다!');
-                } else {
-                    const step = this._getBfsStep(targetCol, targetRow, grid);
-                    if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
-                    else {
-                        const dc = targetCol > this.col ? 1 : -1;
-                        const dr = targetRow > this.row ? 1 : -1;
-                        if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
-                        else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
-                        else this._pickRandomWalkable(grid);
+            // 로직 동일 (함수화 가능하지만 일단 복사)
+            let targetSoil = null;
+            let minDist = Infinity;
+            for (let r = targetRow - 1; r <= targetRow + 1; r++) {
+                for (let c = targetCol - 1; c <= targetCol + 1; c++) {
+                    if (grid.isDiggable(c, r)) {
+                        const d = Math.abs(this.col - c) + Math.abs(this.row - r);
+                        if (d < minDist) { minDist = d; targetSoil = { c, r }; }
                     }
                 }
-                this.energy -= 0.2;
+            }
+
+            if (!targetSoil) {
+                if (!colony.restingChamber) {
+                    colony.restingChamber = { col: targetCol, row: targetRow };
+                    colony.showEvent('💤 휴식방이 건설되었습니다!');
+                }
+                this.state = W_STATE.IDLE;
+                return;
+            }
+
+            if (minDist <= 1) {
+                this.state = W_STATE.DIG_ACTION;
+                this.returnState = W_STATE.DIG_RESTING;
+                this.digTarget = targetSoil;
+                this.waitTimer = rand(1000, 2000);
+            } else {
+                const step = this._getBfsStep(targetSoil.c, targetSoil.r, grid);
+                if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                else {
+                    const dc = targetSoil.c > this.col ? 1 : -1;
+                    const dr = targetSoil.r > this.row ? 1 : -1;
+                    if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
+                    else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
+                    else this._pickRandomWalkable(grid);
+                }
             }
         }
 
@@ -2159,6 +2221,22 @@
                     ctx.fillStyle = '#7ecf5c';
                     ctx.beginPath();
                     ctx.arc(3.5 * s, 0, 1.2 * s, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // Digging Action Jitter
+            if (ant.state === W_STATE.DIG_ACTION) {
+                // 진동 효과
+                const jitterX = (Math.random() - 0.5) * 1.5;
+                const jitterY = (Math.random() - 0.5) * 1.5;
+                ctx.translate(jitterX, jitterY);
+
+                // 파티클 (흙먼지)
+                if (Math.random() < 0.3) {
+                    ctx.fillStyle = 'rgba(100, 80, 50, 0.7)';
+                    ctx.beginPath();
+                    ctx.arc(4 * s, rand(-2, 2) * s, rand(1, 2), 0, Math.PI * 2);
                     ctx.fill();
                 }
             }
