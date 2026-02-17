@@ -1143,12 +1143,108 @@
     }
 
     // ─── Main Game ───
+    // ─── Ambient Music System ───
+    class AmbientMusic {
+        constructor() {
+            this.ctx = null;
+            this.isPlaying = false;
+            this.masterGain = null;
+            this.ost = [];
+        }
+
+        init() {
+            if (!this.ctx) {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.4;
+                this.masterGain.connect(this.ctx.destination);
+            }
+        }
+
+        start() {
+            this.init();
+            if (this.ctx.state === 'suspended') this.ctx.resume();
+            this.isPlaying = true;
+            this._playDrone();
+            this._scheduleNote();
+        }
+
+        _playDrone() {
+            // Deep drone
+            const osc = this.ctx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.value = 55; // A1
+            const gain = this.ctx.createGain();
+            gain.gain.value = 0.15;
+
+            // LPF for underwater/underground feel
+            const lpf = this.ctx.createBiquadFilter();
+            lpf.type = 'lowpass';
+            lpf.frequency.value = 200;
+
+            osc.connect(lpf);
+            lpf.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start();
+            this.ost.push(osc);
+
+            // Higher subtle drone
+            const osc2 = this.ctx.createOscillator();
+            osc2.type = 'sine';
+            osc2.frequency.value = 110; // A2
+            const gain2 = this.ctx.createGain();
+            gain2.gain.value = 0.05;
+            osc2.connect(gain2);
+            gain2.connect(this.masterGain);
+            osc2.start();
+            this.ost.push(osc2);
+        }
+
+        _scheduleNote() {
+            if (!this.isPlaying) return;
+            // Pentatonic scale (C minor pentatonicish)
+            const notes = [196.00, 261.63, 311.13, 392.00, 523.25]; // G3, C4, Eb4, G4, C5
+            const note = notes[Math.floor(Math.random() * notes.length)];
+            const time = this.ctx.currentTime;
+
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = note;
+
+            const gain = this.ctx.createGain();
+            gain.gain.setValueAtTime(0, time);
+            gain.gain.linearRampToValueAtTime(0.1, time + 2); // Slow attack
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 6); // Long decay
+
+            // Stereo panner
+            const panner = this.ctx.createStereoPanner();
+            panner.pan.value = Math.random() * 2 - 1;
+
+            osc.connect(gain);
+            gain.connect(panner);
+            panner.connect(this.masterGain);
+
+            osc.start(time);
+            osc.stop(time + 6.5);
+
+            setTimeout(() => this._scheduleNote(), Math.random() * 4000 + 3000);
+        }
+
+        stop() {
+            this.isPlaying = false;
+            this.ost.forEach(o => { try { o.stop(); } catch (e) { } });
+            this.ost = [];
+            if (this.ctx) this.ctx.suspend();
+        }
+    }
+
     const game = {
         canvas: null,
         ctx: null,
         width: 0,
         height: 0,
         grid: null,
+        bgm: null, // AmbientMusic instance
         queen: null,
         workers: [],
         foods: [],
@@ -1192,7 +1288,11 @@
 
             // Controls
             document.getElementById('btn-speed').addEventListener('click', () => this._toggleSpeed());
+            document.getElementById('btn-bgm').addEventListener('click', () => this._toggleBGM());
             document.getElementById('btn-pause').addEventListener('click', () => this._togglePause());
+
+            // Start BGM system (muted initially)
+            this.bgm = new AmbientMusic();
 
             // Start
             this.lastTime = performance.now();
@@ -1815,6 +1915,19 @@
             const min = Math.floor(totalSec / 60);
             const sec = totalSec % 60;
             document.getElementById('stat-time').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+        },
+
+        _toggleBGM() {
+            const btn = document.getElementById('btn-bgm');
+            if (this.bgm.isPlaying) {
+                this.bgm.stop();
+                btn.textContent = '🎵 OFF';
+                btn.classList.remove('active');
+            } else {
+                this.bgm.start();
+                btn.textContent = '🎵 ON';
+                btn.classList.add('active');
+            }
         }
     };
 
