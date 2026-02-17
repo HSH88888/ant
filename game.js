@@ -514,42 +514,28 @@
     }
 
     // ─── BFS 경로 탐색기 (터널 내비게이션) ───
-    // 그리드 내 빈 공간(터널/지표)을 따라 최단 경로의 다음 한 걸음을 반환
-    function bfsNextStep(startCol, startRow, targetCol, targetRow, grid, maxSteps = 300) {
+    function bfsNextStep(startCol, startRow, targetCol, targetRow, grid, maxSteps = 400) {
         if (startCol === targetCol && startRow === targetRow) return null;
-
         const key = (c, r) => r * grid.cols + c;
         const visited = new Set();
         visited.add(key(startCol, startRow));
-
-        // {col, row, firstDc, firstDr} — firstDc/firstDr = 첫 걸음 방향
         const queue = [];
         const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
-
         for (const [dc, dr] of dirs) {
-            const nc = startCol + dc;
-            const nr = startRow + dr;
+            const nc = startCol + dc, nr = startRow + dr;
             if (!grid.isWalkable(nc, nr)) continue;
             const k = key(nc, nr);
             if (visited.has(k)) continue;
             visited.add(k);
             queue.push({ col: nc, row: nr, dc, dr });
         }
-
-        let steps = 0;
-        let head = 0;
+        let steps = 0, head = 0;
         while (head < queue.length && steps < maxSteps) {
-            const cur = queue[head++];
-            steps++;
-
-            // 목표 도달 (또는 근접)
-            if (Math.abs(cur.col - targetCol) <= 1 && Math.abs(cur.row - targetRow) <= 1) {
+            const cur = queue[head++]; steps++;
+            if (Math.abs(cur.col - targetCol) <= 1 && Math.abs(cur.row - targetRow) <= 1)
                 return { dc: cur.dc, dr: cur.dr };
-            }
-
             for (const [ddc, ddr] of dirs) {
-                const nc = cur.col + ddc;
-                const nr = cur.row + ddr;
+                const nc = cur.col + ddc, nr = cur.row + ddr;
                 if (!grid.isWalkable(nc, nr)) continue;
                 const k = key(nc, nr);
                 if (visited.has(k)) continue;
@@ -557,32 +543,54 @@
                 queue.push({ col: nc, row: nr, dc: cur.dc, dr: cur.dr });
             }
         }
-        return null; // 경로 없음
+        return null;
     }
 
-    // ─── 일개미 AI (역할 기반) ───
-    // 실제 일개미 행동: 채집(forager), 굴착(digger), 육아(nurse)
+    // ─── 일개미 AI (카스트 기반) ───
     const W_STATE = {
         IDLE: 0,
-        FORAGE_TO_SURFACE: 1,  // 지표면으로 올라감
-        FORAGE_SEARCH: 2,      // 지표면에서 먹이 탐색
-        FORAGE_RETURN: 3,      // 먹이를 둥지로 운반
-        DIG_EXPLORE: 4,        // 새 터널 굴착
-        NURSE_CARE: 5,         // 알/유충 돌봄
-        NURSE_FEED: 6,         // 유충에게 먹이 제공
-        WANDER: 7,             // 터널 내 순찰
+        FORAGE_TO_SURFACE: 1,
+        FORAGE_SEARCH: 2,
+        FORAGE_RETURN: 3,
+        DIG_EXPLORE: 4,
+        DIG_FOOD_CHAMBER: 5,   // 먹이 창고 굴착
+        NURSE_CARE: 6,
+        NURSE_FEED: 7,
+        GUARD_PATROL: 8,       // 경비 순찰
+        GUARD_EGGS: 9,         // 알 방어
+        MALE_ASCEND: 10,       // 숫개미 지표면 이동
+        WANDER: 11,
     };
 
-    // 역할 배분 (콜로니 상태에 따라 동적 결정)
-    const ROLE = { FORAGER: 'forager', DIGGER: 'digger', NURSE: 'nurse' };
+    // 5가지 카스트 (부화 시 고정)
+    const CASTE = {
+        FORAGER: 'forager',   // 채집: 먹이 수집·운반
+        DIGGER: 'digger',     // 굴착: 터널·방 확장
+        NURSE: 'nurse',       // 육아: 알/유충 돌봄
+        GUARD: 'guard',       // 경비: 입구 순찰, 알 방어
+        MALE: 'male',         // 숫개미: 혼인비행 준비
+    };
+
+    // 카스트 배분 비율 (성장기)
+    function assignCaste(colony) {
+        const r = Math.random();
+        // 성숙기에 일정 확률로 숫개미 생성
+        if (game.queen && game.queen.state === Q_STATE.MATURE && game.workers.length > 8 && r < 0.08)
+            return CASTE.MALE;
+        if (r < 0.30) return CASTE.FORAGER;
+        if (r < 0.55) return CASTE.DIGGER;
+        if (r < 0.75) return CASTE.NURSE;
+        return CASTE.GUARD;
+    }
 
     class WorkerAnt extends Ant {
-        constructor(col, row) {
+        constructor(col, row, caste = CASTE.FORAGER) {
             super(col, row);
             this.speed = WORKER_SPEED;
             this.state = W_STATE.IDLE;
-            this.role = ROLE.FORAGER;    // 기본 역할
-            this.isNanitic = false;       // 나니틱 여부
+            this.caste = caste;           // 고정 카스트
+            this.isNanitic = false;
+            this.hasWings = caste === CASTE.MALE; // 숫개미는 날개 있음
 
             this.carryingFood = false;
             this.waitTimer = rand(500, 2000);
@@ -592,6 +600,7 @@
             this.stuckCount = 0;
             this.prevCol = col;
             this.prevRow = row;
+            this.patrolDir = Math.random() > 0.5 ? 1 : -1; // 경비 순찰 방향
 
             // BFS 경로 캐시
             this._pathTarget = null;
@@ -623,55 +632,52 @@
                 case W_STATE.FORAGE_SEARCH: this._doForageSearch(dt, grid, foods); break;
                 case W_STATE.FORAGE_RETURN: this._doForageReturn(dt, grid, colony, queen); break;
                 case W_STATE.DIG_EXPLORE: this._doDigExplore(dt, grid, colony); break;
+                case W_STATE.DIG_FOOD_CHAMBER: this._doDigFoodChamber(dt, grid, colony, queen); break;
                 case W_STATE.NURSE_CARE: this._doNurseCare(dt, grid, colony); break;
                 case W_STATE.NURSE_FEED: this._doNurseFeed(dt, grid, colony); break;
+                case W_STATE.GUARD_PATROL: this._doGuardPatrol(dt, grid, queen); break;
+                case W_STATE.GUARD_EGGS: this._doGuardEggs(dt, grid, colony); break;
+                case W_STATE.MALE_ASCEND: this._doMaleAscend(dt, grid, queen); break;
                 case W_STATE.WANDER: this._doWander(dt, grid); break;
             }
         }
 
-        // ── 역할 결정 (콜로니 필요에 따라) ──
-        _assignRole(colony, queen) {
-            const hasEggs = colony.eggs.length > 0;
-            const lowFood = colony.food < 5;
-            const fewTunnels = queen.state >= Q_STATE.MATURE;
-
-            if (lowFood) {
-                // 식량 부족 → 대부분 채집
-                this.role = Math.random() < 0.7 ? ROLE.FORAGER :
-                    (hasEggs ? ROLE.NURSE : ROLE.DIGGER);
-            } else if (hasEggs && Math.random() < 0.4) {
-                this.role = ROLE.NURSE;
-            } else {
-                const r = Math.random();
-                if (r < 0.4) this.role = ROLE.FORAGER;
-                else if (r < 0.7) this.role = ROLE.DIGGER;
-                else this.role = ROLE.NURSE;
-            }
-        }
-
-        // ── IDLE: 다음 행동 결정 ──
+        // ── IDLE: 카스트에 따른 행동 결정 ──
         _doIdle(dt, grid, colony, queen) {
             this.waitTimer -= dt;
             if (this.waitTimer <= 0) {
-                this._assignRole(colony, queen);
-
-                switch (this.role) {
-                    case ROLE.FORAGER:
+                this._pathStep = null;
+                switch (this.caste) {
+                    case CASTE.FORAGER:
                         this.state = W_STATE.FORAGE_TO_SURFACE;
-                        this._pathStep = null;
                         break;
-                    case ROLE.DIGGER:
-                        this.state = W_STATE.DIG_EXPLORE;
-                        this.digCount = 0;
-                        this.maxDigCount = randInt(5, 15);
-                        this.digDirection = Math.random() > 0.5 ? 1 : -1;
+                    case CASTE.DIGGER:
+                        // 먹이 창고가 없으면 먼저 굴착
+                        if (!colony.foodChamber && queen.state >= Q_STATE.MATURE) {
+                            this.state = W_STATE.DIG_FOOD_CHAMBER;
+                        } else {
+                            this.state = W_STATE.DIG_EXPLORE;
+                            this.digCount = 0;
+                            this.maxDigCount = randInt(5, 15);
+                            this.digDirection = Math.random() > 0.5 ? 1 : -1;
+                        }
                         break;
-                    case ROLE.NURSE:
+                    case CASTE.NURSE:
                         if (colony.eggs.length > 0) {
                             this.state = W_STATE.NURSE_CARE;
                         } else {
                             this.state = W_STATE.WANDER;
                         }
+                        break;
+                    case CASTE.GUARD:
+                        if (colony.eggs.length > 0 && Math.random() < 0.4) {
+                            this.state = W_STATE.GUARD_EGGS;
+                        } else {
+                            this.state = W_STATE.GUARD_PATROL;
+                        }
+                        break;
+                    case CASTE.MALE:
+                        this.state = W_STATE.MALE_ASCEND;
                         break;
                 }
                 this.waitTimer = rand(500, 1500);
@@ -747,19 +753,31 @@
             }
         }
 
-        // ── 채집: 먹이를 둥지(여왕방)로 운반 ──
+        // ── 채집: 먹이를 먹이 창고(또는 여왕방)로 운반 ──
         _doForageReturn(dt, grid, colony, queen) {
-            const targetRow = queen.nestRow;
-            const targetCol = queen.nestCol;
+            // 먹이 창고가 있으면 그곳으로, 없으면 여왕방으로
+            const targetCol = colony.foodChamber ? colony.foodChamber.col : queen.nestCol;
+            const targetRow = colony.foodChamber ? colony.foodChamber.row : queen.nestRow;
 
             // 도착 확인
             if (Math.abs(this.row - targetRow) < 3 && Math.abs(this.col - targetCol) < 5) {
                 colony.food += 2;
                 this.carryingFood = false;
                 colony.deliveries++;
+                // 먹이 창고에 식량 아이템 추가
+                if (colony.foodChamber) {
+                    colony.storedFoodItems.push({
+                        col: this.col + randInt(-2, 2),
+                        row: this.row + randInt(-1, 0),
+                        size: rand(0.3, 0.8)
+                    });
+                    // 최대 20개까지만 표시
+                    if (colony.storedFoodItems.length > 20)
+                        colony.storedFoodItems.shift();
+                }
                 this.state = W_STATE.IDLE;
                 this.waitTimer = rand(800, 1500);
-                colony.showEvent('🍎 일개미가 식량을 가져왔습니다');
+                colony.showEvent('🍎 채집개미가 먹이 창고에 식량을 저장했습니다');
                 return;
             }
 
@@ -767,7 +785,6 @@
             if (step) {
                 this.moveTo(this.col + step.dc, this.row + step.dr, grid);
             } else {
-                // BFS 실패 → 직접 이동 시도
                 const dc = targetCol > this.col ? 1 : targetCol < this.col ? -1 : 0;
                 const dr = targetRow > this.row ? 1 : targetRow < this.row ? -1 : 0;
                 if (dr !== 0 && grid.isWalkable(this.col, this.row + dr)) {
@@ -876,6 +893,110 @@
             }
         }
 
+        // ── 먹이 창고 굴착 (Digger 전용) ──
+        _doDigFoodChamber(dt, grid, colony, queen) {
+            // 여왕방에서 가로 5~8칸 옆에 먹이 창고 굴착
+            const chamberDir = queen.nestCol < grid.cols / 2 ? 1 : -1;
+            const targetCol = queen.nestCol + chamberDir * randInt(5, 8);
+            const targetRow = queen.nestRow;
+
+            // 목표에 도달하면 그 자리에 방 파기
+            if (Math.abs(this.col - targetCol) < 2 && Math.abs(this.row - targetRow) < 2) {
+                // 주위를 파서 방 만들기
+                for (let dc = -2; dc <= 2; dc++) {
+                    for (let dr = -1; dr <= 0; dr++) {
+                        const c = this.col + dc, r = this.row + dr;
+                        if (grid.isDiggable(c, r)) grid.set(c, r, EMPTY);
+                    }
+                }
+                colony.foodChamber = { col: this.col, row: this.row };
+                colony.showEvent('📦 굴착개미가 먹이 창고를 만들었습니다!');
+                this.state = W_STATE.IDLE;
+                this.waitTimer = 2000;
+                return;
+            }
+
+            // 목표 방향으로 파며 이동
+            const dc = targetCol > this.col ? 1 : targetCol < this.col ? -1 : 0;
+            const dr = targetRow > this.row ? 1 : targetRow < this.row ? -1 : 0;
+            if (dc !== 0 && this.moveTo(this.col + dc, this.row, grid)) return;
+            if (dr !== 0 && this.moveTo(this.col, this.row + dr, grid)) return;
+            this._pickRandomWalkable(grid);
+        }
+
+        // ── 경비 순찰 (Guard: 입구 근처) ──
+        _doGuardPatrol(dt, grid, queen) {
+            const entryCol = queen.entryCol;
+            const entryRow = grid.surfaceRow;
+
+            // 입구 근처면 좌우 순찰
+            if (Math.abs(this.col - entryCol) < 8 && Math.abs(this.row - entryRow) < 5) {
+                // 순찰 이동
+                const nc = this.col + this.patrolDir;
+                if (grid.isWalkable(nc, this.row) && Math.abs(nc - entryCol) < 10) {
+                    this.moveTo(nc, this.row, grid);
+                } else {
+                    this.patrolDir *= -1;
+                    this._pickRandomWalkable(grid);
+                }
+                this.waitTimer -= dt;
+                if (this.waitTimer <= 0) {
+                    this.state = W_STATE.IDLE;
+                    this.waitTimer = rand(3000, 6000);
+                }
+                return;
+            }
+
+            // 입구로 BFS 이동
+            const step = this._getBfsStep(entryCol, entryRow, grid);
+            if (step) {
+                this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+            } else {
+                this._pickRandomWalkable(grid);
+            }
+        }
+
+        // ── 경비: 알 방어 (Guard: 알 주위 머물기) ──
+        _doGuardEggs(dt, grid, colony) {
+            if (colony.eggs.length === 0) {
+                this.state = W_STATE.GUARD_PATROL;
+                return;
+            }
+            const egg = colony.eggs[0];
+            if (Math.abs(this.col - egg.col) <= 2 && Math.abs(this.row - egg.row) <= 1) {
+                this.waitTimer -= dt;
+                if (this.waitTimer <= 0) {
+                    this.state = W_STATE.IDLE;
+                    this.waitTimer = rand(4000, 8000);
+                }
+                return;
+            }
+            const step = this._getBfsStep(egg.col, egg.row, grid);
+            if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+            else this._pickRandomWalkable(grid);
+        }
+
+        // ── 숫개미: 지표면으로 올라감 (혼인비행 준비) ──
+        _doMaleAscend(dt, grid, queen) {
+            // 지표면 도달 → 배회
+            if (this.row <= grid.surfaceRow) {
+                const dc = Math.random() > 0.5 ? 1 : -1;
+                this.moveTo(this.col + dc, this.row, grid);
+                return;
+            }
+            // BFS로 올라감
+            const step = this._getBfsStep(queen.entryCol, grid.surfaceRow, grid);
+            if (step) {
+                this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+            } else {
+                if (grid.isWalkable(this.col, this.row - 1)) {
+                    this.moveTo(this.col, this.row - 1, grid);
+                } else {
+                    this._pickRandomWalkable(grid);
+                }
+            }
+        }
+
         // ── 순찰: 터널 내 돌아다님 ──
         _doWander(dt, grid) {
             this.waitTimer -= dt;
@@ -926,9 +1047,11 @@
     // ─── Colony ───
     class Colony {
         constructor() {
-            this.food = 0;   // 밀폐기엔 식량 0으로 시작 (체내 에너지 사용)
+            this.food = 0;
             this.eggs = [];
             this.deliveries = 0;
+            this.foodChamber = null;      // {col, row} 먹이 창고 위치
+            this.storedFoodItems = [];    // 먹이 창고 시각화용
             this._eventMsg = '';
             this._eventTimer = 0;
         }
@@ -1090,14 +1213,22 @@
             for (const egg of colony.eggs) {
                 egg.update(dt);
                 if (egg.hatched) {
-                    const worker = new WorkerAnt(egg.col, egg.row);
+                    let caste;
                     if (egg.isNanitic) {
-                        worker.speed = WORKER_SPEED * 0.8; // 나니틱은 작고 느림
+                        // 나니틱은 채집 또는 육아만
+                        caste = Math.random() < 0.5 ? CASTE.FORAGER : CASTE.NURSE;
+                    } else {
+                        caste = assignCaste(colony);
+                    }
+                    const worker = new WorkerAnt(egg.col, egg.row, caste);
+                    if (egg.isNanitic) {
+                        worker.speed = WORKER_SPEED * 0.8;
                         worker.isNanitic = true;
                         this.queen.naniticsHatched++;
                         colony.showEvent(`🐜 나니틱(첫 세대) 부화! (${this.queen.naniticsHatched}/${NANITICS_COUNT})`);
                     } else {
-                        colony.showEvent('🐜 일개미가 부화했습니다!');
+                        const casteNames = { forager: '채집', digger: '굴착', nurse: '육아', guard: '경비', male: '숫개미' };
+                        colony.showEvent(`🐜 ${casteNames[caste]} 개미가 부화했습니다!`);
                     }
                     this.workers.push(worker);
                 }
@@ -1177,10 +1308,48 @@
             // Food on surface
             this._drawFoods(ctx, time);
 
-            // Workers
+            // Food chamber stored items
+            const fc = this.colony.foodChamber;
+            if (fc) {
+                // 먹이 창고 배경 표시
+                ctx.fillStyle = 'rgba(80, 120, 60, 0.15)';
+                ctx.fillRect((fc.col - 3) * CELL, (fc.row - 1) * CELL, 6 * CELL, 2 * CELL);
+                // 저장된 식량 아이템
+                for (const item of this.colony.storedFoodItems) {
+                    const pulse = 1 + Math.sin(time * 0.002 + item.col) * 0.1;
+                    ctx.fillStyle = 'rgba(126, 207, 92, 0.7)';
+                    ctx.beginPath();
+                    ctx.arc(item.col * CELL + 2, item.row * CELL + 2, (2 + item.size * 3) * pulse, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // "창고" 라벨 (작은 표시)
+                ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                ctx.font = '6px sans-serif';
+                ctx.fillText('📦', (fc.col - 2) * CELL, (fc.row - 1) * CELL - 1);
+            }
+
+            // Workers (카스트별 색상)
+            const casteColors = {
+                forager: '#c8a878',  // 갈색
+                digger: '#a08060',   // 진한 갈색
+                nurse: '#d8b898',    // 밝은 색
+                guard: '#9a6040',    // 붉은 갈색
+                male: '#d4b040',     // 금색
+            };
             for (const w of this.workers) {
-                const color = w.isNanitic ? '#b89868' : '#c8a878';
-                this._drawAnt(ctx, w, color, w.carryingFood, time, false, w.isNanitic ? 0.7 : 1);
+                const baseColor = w.isNanitic ? '#b89868' : (casteColors[w.caste] || '#c8a878');
+                const scale = w.isNanitic ? 0.7 : (w.caste === CASTE.GUARD ? 1.1 : 1);
+                this._drawAnt(ctx, w, baseColor, w.carryingFood, time, false, scale);
+                // 숫개미 날개 표시
+                if (w.hasWings) {
+                    ctx.fillStyle = 'rgba(200, 200, 255, 0.4)';
+                    ctx.beginPath();
+                    ctx.ellipse(w.x - 1, w.y - 3, 3, 1.5, -0.3, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.ellipse(w.x + 1, w.y - 3, 3, 1.5, 0.3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
 
             // Queen
@@ -1446,9 +1615,13 @@
 
         // ─── HUD ───
         _updateHUD() {
-            document.getElementById('stat-workers').textContent = this.workers.length;
+            // 카스트별 카운트
+            const counts = { forager: 0, digger: 0, nurse: 0, guard: 0, male: 0 };
+            for (const w of this.workers) counts[w.caste]++;
+            const breakdown = `${this.workers.length} (채${counts.forager}/굴${counts.digger}/육${counts.nurse}/경${counts.guard}/♂${counts.male})`;
+            document.getElementById('stat-workers').textContent = breakdown;
             document.getElementById('stat-eggs').textContent = this.colony.eggs.length;
-            document.getElementById('stat-food').textContent = Math.floor(this.colony.food);
+            document.getElementById('stat-food').textContent = Math.floor(this.colony.food) + (this.colony.foodChamber ? ' 📦' : '');
             document.getElementById('stat-tunnels').textContent = this.grid.countEmpty();
 
             // 여왕 단계 & 체내 에너지
