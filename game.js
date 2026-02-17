@@ -784,24 +784,22 @@
         }
 
         // ── 채집: 먹이를 먹이 창고(또는 여왕방)로 운반 ──
+        // 2단계: 1) 지표면이면 입구로 이동  2) 지하면 BFS로 목표로
         _doForageReturn(dt, grid, colony, queen) {
-            // 먹이 창고가 있으면 그곳으로, 없으면 여왕방으로
-            const targetCol = colony.foodChamber ? colony.foodChamber.col : queen.nestCol;
-            const targetRow = colony.foodChamber ? colony.foodChamber.row : queen.nestRow;
+            const nestCol = colony.foodChamber ? colony.foodChamber.col : queen.nestCol;
+            const nestRow = colony.foodChamber ? colony.foodChamber.row : queen.nestRow;
 
             // 도착 확인
-            if (Math.abs(this.row - targetRow) < 3 && Math.abs(this.col - targetCol) < 5) {
+            if (Math.abs(this.row - nestRow) < 3 && Math.abs(this.col - nestCol) < 5) {
                 colony.food += 2;
                 this.carryingFood = false;
                 colony.deliveries++;
-                // 먹이 창고에 식량 아이템 추가
                 if (colony.foodChamber) {
                     colony.storedFoodItems.push({
                         col: this.col + randInt(-2, 2),
                         row: this.row + randInt(-1, 0),
                         size: rand(0.3, 0.8)
                     });
-                    // 최대 20개까지만 표시
                     if (colony.storedFoodItems.length > 20)
                         colony.storedFoodItems.shift();
                 }
@@ -811,15 +809,51 @@
                 return;
             }
 
-            const step = this._getBfsStep(targetCol, targetRow, grid);
+            const entryCol = queen.entryCol;
+            const entryRow = grid.surfaceRow;
+
+            // === 1단계: 지표면에 있으면 입구로 직접 이동 ===
+            if (this.row <= entryRow) {
+                // 입구 근처 도달
+                if (Math.abs(this.col - entryCol) <= 1) {
+                    // 입구 아래로 들어가기
+                    if (grid.isWalkable(entryCol, entryRow + 1)) {
+                        this.moveTo(entryCol, entryRow + 1, grid);
+                    } else if (grid.isWalkable(this.col, this.row + 1)) {
+                        this.moveTo(this.col, this.row + 1, grid);
+                    } else {
+                        // 입구가 막혔으면 파기
+                        if (grid.isDiggable(entryCol, entryRow + 1)) {
+                            this.moveTo(entryCol, entryRow + 1, grid);
+                        }
+                    }
+                    return;
+                }
+                // 입구 쪽으로 걸어가기 (단순 가로 이동)
+                const dc = entryCol > this.col ? 1 : -1;
+                if (grid.isWalkable(this.col + dc, this.row)) {
+                    this.moveTo(this.col + dc, this.row, grid);
+                } else {
+                    this._pickRandomWalkable(grid);
+                }
+                return;
+            }
+
+            // === 2단계: 지하에서 BFS로 목표로 ===
+            const step = this._getBfsStep(nestCol, nestRow, grid);
             if (step) {
                 this.moveTo(this.col + step.dc, this.row + step.dr, grid);
             } else {
-                const dc = targetCol > this.col ? 1 : targetCol < this.col ? -1 : 0;
-                const dr = targetRow > this.row ? 1 : targetRow < this.row ? -1 : 0;
+                // BFS 실패 → 목표 방향으로 직접 + 굴착
+                const dc = nestCol > this.col ? 1 : nestCol < this.col ? -1 : 0;
+                const dr = nestRow > this.row ? 1 : nestRow < this.row ? -1 : 0;
                 if (dr !== 0 && grid.isWalkable(this.col, this.row + dr)) {
                     this.moveTo(this.col, this.row + dr, grid);
                 } else if (dc !== 0 && grid.isWalkable(this.col + dc, this.row)) {
+                    this.moveTo(this.col + dc, this.row, grid);
+                } else if (dr !== 0 && grid.isDiggable(this.col, this.row + dr)) {
+                    this.moveTo(this.col, this.row + dr, grid);
+                } else if (dc !== 0 && grid.isDiggable(this.col + dc, this.row)) {
                     this.moveTo(this.col + dc, this.row, grid);
                 } else {
                     this._pickRandomWalkable(grid);
@@ -1188,8 +1222,58 @@
         },
 
         _rebuildGrid() {
-            // On resize: rebuild grid (loses progress, but window resizes are rare)
-            this._buildGrid();
+            // 리사이즈 시 기존 그리드 데이터 보존
+            const oldGrid = this.grid;
+            const newCols = Math.floor(this.width / CELL);
+            const newRows = Math.floor(this.height / CELL);
+            // 크기가 같으면 아무것도 안 함
+            if (oldGrid && newCols === oldGrid.cols && newRows === oldGrid.rows) {
+                this.soilDirty = true;
+                return;
+            }
+            const newSurfaceRow = Math.floor(newRows * SURFACE_RATIO);
+            const newGrid = new Grid(newCols, newRows, newSurfaceRow);
+
+            // 기존 셀 데이터 복사 (겹치는 영역)
+            if (oldGrid) {
+                const copyC = Math.min(oldGrid.cols, newCols);
+                const copyR = Math.min(oldGrid.rows, newRows);
+                for (let r = 0; r < copyR; r++) {
+                    for (let c = 0; c < copyC; c++) {
+                        const oldVal = oldGrid.get(c, r);
+                        // 새 그리드의 지표면 위치가 달라졌으면 지하 영역만 복사
+                        if (r >= newSurfaceRow && r >= oldGrid.surfaceRow) {
+                            newGrid.set(c, r, oldVal);
+                        } else if (r < newSurfaceRow && r < oldGrid.surfaceRow) {
+                            newGrid.set(c, r, oldVal);
+                        } else if (r === newSurfaceRow) {
+                            newGrid.set(c, r, SURFACE);
+                        }
+                    }
+                }
+            }
+            this.grid = newGrid;
+
+            // 개미들이 새 그리드 범위 안에 있도록 클램프
+            const clampAnt = (ant) => {
+                ant.col = Math.min(ant.col, newCols - 2);
+                ant.row = Math.min(ant.row, newRows - 2);
+                ant.targetCol = Math.min(ant.targetCol, newCols - 2);
+                ant.targetRow = Math.min(ant.targetRow, newRows - 2);
+                ant.x = ant.col * CELL + CELL / 2;
+                ant.y = ant.row * CELL + CELL / 2;
+                ant.moving = false;
+                ant.digging = false;
+            };
+            if (this.queen) clampAnt(this.queen);
+            for (const w of this.workers) clampAnt(w);
+            // 알도 클램프
+            for (const egg of this.colony.eggs) {
+                egg.col = Math.min(egg.col, newCols - 2);
+                egg.row = Math.min(egg.row, newRows - 2);
+            }
+
+            this.soilDirty = true;
         },
 
         _spawnSurfaceFood() {
