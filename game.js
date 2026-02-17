@@ -553,13 +553,18 @@
         FORAGE_SEARCH: 2,
         FORAGE_RETURN: 3,
         DIG_EXPLORE: 4,
-        DIG_FOOD_CHAMBER: 5,   // 먹이 창고 굴착
+        DIG_FOOD_CHAMBER: 5,
         NURSE_CARE: 6,
         NURSE_FEED: 7,
-        GUARD_PATROL: 8,       // 경비 순찰
-        GUARD_EGGS: 9,         // 알 방어
-        MALE_ASCEND: 10,       // 숫개미 지표면 이동
+        GUARD_PATROL: 8,
+        GUARD_EGGS: 9,
+        MALE_ASCEND: 10,
         WANDER: 11,
+        DIG_NURSERY: 12,
+        DIG_RESTING: 13,
+        NURSE_TRANSPORT: 14,
+        TIRED_RETURN: 15,
+        SLEEPING: 16
     };
 
     // 5가지 카스트 (부화 시 고정)
@@ -589,6 +594,8 @@
             this.speed = WORKER_SPEED;
             this.state = W_STATE.IDLE;
             this.caste = caste;           // 고정 카스트
+            this.energy = 100;            // 에너지 (0-100)
+            this.maxEnergy = 100;
             this.isNanitic = false;
             this.hasWings = caste === CASTE.MALE; // 숫개미는 날개 있음
 
@@ -663,6 +670,11 @@
                 case W_STATE.GUARD_EGGS: this._doGuardEggs(dt, grid, colony); break;
                 case W_STATE.MALE_ASCEND: this._doMaleAscend(dt, grid, queen); break;
                 case W_STATE.WANDER: this._doWander(dt, grid); break;
+                case W_STATE.DIG_NURSERY: this._doDigNursery(dt, grid, colony, queen); break;
+                case W_STATE.DIG_RESTING: this._doDigResting(dt, grid, colony, queen); break;
+                case W_STATE.NURSE_TRANSPORT: this._doNurseTransport(dt, grid, colony); break;
+                case W_STATE.TIRED_RETURN: this._doTiredReturn(dt, grid, colony); break;
+                case W_STATE.SLEEPING: this._doSleep(dt); break;
             }
         }
 
@@ -671,14 +683,25 @@
             this.waitTimer -= dt;
             if (this.waitTimer <= 0) {
                 this._pathStep = null;
+
+                // 0. 피로도 체크: 에너지 20% 미만이면 휴식 (여왕 제외)
+                if (this.energy < 20) {
+                    this.state = W_STATE.TIRED_RETURN;
+                    return;
+                }
+
                 switch (this.caste) {
                     case CASTE.FORAGER:
                         this.state = W_STATE.FORAGE_TO_SURFACE;
                         break;
                     case CASTE.DIGGER:
-                        // 먹이 창고가 없으면 먼저 굴착
+                        // 우선순위: Food -> Nursery -> Resting
                         if (!colony.foodChamber && queen.state >= Q_STATE.MATURE) {
                             this.state = W_STATE.DIG_FOOD_CHAMBER;
+                        } else if (!colony.nurseryChamber && colony.foodChamber) {
+                            this.state = W_STATE.DIG_NURSERY;
+                        } else if (!colony.restingChamber && colony.nurseryChamber) {
+                            this.state = W_STATE.DIG_RESTING;
                         } else {
                             this.state = W_STATE.DIG_EXPLORE;
                             this.digCount = 0;
@@ -687,7 +710,13 @@
                         }
                         break;
                     case CASTE.NURSE:
-                        if (colony.eggs.length > 0) {
+                        // 알이 보육방 밖에 있으면 운반
+                        const unsafeEgg = colony.eggs.find(e =>
+                            colony.nurseryChamber && (Math.abs(e.col - colony.nurseryChamber.col) > 4 || Math.abs(e.row - colony.nurseryChamber.row) > 4)
+                        );
+                        if (unsafeEgg && colony.nurseryChamber) {
+                            this.state = W_STATE.NURSE_TRANSPORT;
+                        } else if (colony.eggs.length > 0) {
                             this.state = W_STATE.NURSE_CARE;
                         } else {
                             this.state = W_STATE.WANDER;
@@ -703,8 +732,15 @@
                     case CASTE.MALE:
                         this.state = W_STATE.MALE_ASCEND;
                         break;
+                    default:
+                        this.state = W_STATE.WANDER;
+                        break;
                 }
-                this.waitTimer = rand(500, 1500);
+
+                // 상태가 여전히 IDLE이면 대기
+                if (this.state === W_STATE.IDLE) {
+                    this.waitTimer = rand(500, 1500);
+                }
             }
         }
 
@@ -1065,11 +1101,157 @@
         _doWander(dt, grid) {
             this.waitTimer -= dt;
             if (this.waitTimer <= 0) {
+                this.energy -= 0.5; // 소모
                 this.state = W_STATE.IDLE;
                 this.waitTimer = rand(1500, 3000);
                 return;
             }
             this._pickRandomWalkable(grid);
+        }
+
+        // ── 보육방/휴식방 굴착 (Digger) ──
+        _doDigNursery(dt, grid, colony, queen) {
+            // 보육방: 지표면에서 약간 깊은 따뜻한 곳 (Food보다 깊게)
+            const targetRow = grid.surfaceRow + 10;
+            const targetCol = Math.floor(grid.cols / 2) + 5; // 약간 옆으로
+
+            if (!colony.nurseryChamber) {
+                // 아직 미완성
+                if (Math.abs(this.col - targetCol) <= 1 && Math.abs(this.row - targetRow) <= 1) {
+                    // 도착: 방 파기 (3x2)
+                    for (let r = targetRow - 1; r <= targetRow + 1; r++) {
+                        for (let c = targetCol - 1; c <= targetCol + 1; c++) {
+                            if (grid.isDiggable(c, r)) {
+                                grid.set(c, r, EMPTY);
+                                this.digCount++;
+                            }
+                        }
+                    }
+                    colony.nurseryChamber = { col: targetCol, row: targetRow };
+                    this.state = W_STATE.IDLE;
+                    colony.showEvent('👶 보육방이 건설되었습니다!');
+                } else {
+                    // 이동
+                    const step = this._getBfsStep(targetCol, targetRow, grid);
+                    if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                    else {
+                        // 직접 굴착 이동
+                        const dc = targetCol > this.col ? 1 : -1;
+                        const dr = targetRow > this.row ? 1 : -1;
+                        if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
+                        else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
+                        else this._pickRandomWalkable(grid);
+                    }
+                }
+                this.energy -= 0.2;
+            }
+        }
+
+        _doDigResting(dt, grid, colony, queen) {
+            // 휴식방: 가장 깊고 조용한 곳
+            const targetRow = grid.rows - 6;
+            const targetCol = Math.floor(grid.cols / 2) - 5;
+
+            if (!colony.restingChamber) {
+                if (Math.abs(this.col - targetCol) <= 1 && Math.abs(this.row - targetRow) <= 1) {
+                    for (let r = targetRow - 1; r <= targetRow + 1; r++) {
+                        for (let c = targetCol - 1; c <= targetCol + 1; c++) {
+                            if (grid.isDiggable(c, r)) {
+                                grid.set(c, r, EMPTY);
+                                this.digCount++;
+                            }
+                        }
+                    }
+                    colony.restingChamber = { col: targetCol, row: targetRow };
+                    this.state = W_STATE.IDLE;
+                    colony.showEvent('💤 휴식방이 건설되었습니다!');
+                } else {
+                    const step = this._getBfsStep(targetCol, targetRow, grid);
+                    if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                    else {
+                        const dc = targetCol > this.col ? 1 : -1;
+                        const dr = targetRow > this.row ? 1 : -1;
+                        if (grid.isDiggable(this.col + dc, this.row)) this.moveTo(this.col + dc, this.row, grid);
+                        else if (grid.isDiggable(this.col, this.row + dr)) this.moveTo(this.col, this.row + dr, grid);
+                        else this._pickRandomWalkable(grid);
+                    }
+                }
+                this.energy -= 0.2;
+            }
+        }
+
+        // ── 알 운반 (Nurse) ──
+        _doNurseTransport(dt, grid, colony) {
+            if (!colony.nurseryChamber) {
+                this.state = W_STATE.IDLE;
+                return;
+            }
+
+            // 1. 알/유충을 안 들고 있으면 -> 보육방 밖에 있는 알 찾기
+            if (!this.carryingFood) { // carryingFood 변수 재사용 (이름은 Food지만 물체 운반)
+                const unsafeEgg = colony.eggs.find(e =>
+                    Math.abs(e.col - colony.nurseryChamber.col) > 3 || Math.abs(e.row - colony.nurseryChamber.row) > 3
+                );
+
+                if (unsafeEgg) {
+                    if (Math.abs(this.col - unsafeEgg.col) <= 1 && Math.abs(this.row - unsafeEgg.row) <= 1) {
+                        // 픽업
+                        this.carryingFood = unsafeEgg; // 참조 저장
+                        // 알을 리스트에서 잠시 제거하거나 상태 변경? 
+                        // 여기선 단순화를 위해 시각적으로만 들고 있는 척하고, 알 좌표를 개미 따라다니게 함
+                        this.state = W_STATE.NURSE_TRANSPORT;
+                    } else {
+                        const step = this._getBfsStep(unsafeEgg.col, unsafeEgg.row, grid);
+                        if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                        else this._pickRandomWalkable(grid);
+                    }
+                } else {
+                    this.state = W_STATE.IDLE;
+                }
+            } else {
+                // 2. 들고 있으면 -> 보육방으로 이동
+                const target = colony.nurseryChamber;
+                if (Math.abs(this.col - target.col) <= 1 && Math.abs(this.row - target.row) <= 1) {
+                    // 도착: 내려놓기
+                    const egg = this.carryingFood;
+                    egg.col = this.col;
+                    egg.row = this.row;
+                    this.carryingFood = null;
+                    this.state = W_STATE.NURSE_CARE;
+                } else {
+                    const step = this._getBfsStep(target.col, target.row, grid);
+                    if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                    else this._pickRandomWalkable(grid);
+
+                    // 들고 있는 알 위치 동기화
+                    if (this.carryingFood) {
+                        this.carryingFood.col = this.col;
+                        this.carryingFood.row = this.row - 1;
+                    }
+                }
+            }
+            this.energy -= 0.1;
+        }
+
+        // ── 피로 회복 ──
+        _doTiredReturn(dt, grid, colony) {
+            const target = colony.restingChamber || { col: Math.floor(grid.cols / 2), row: grid.rows - 2 };
+
+            if (Math.abs(this.col - target.col) <= 2 && Math.abs(this.row - target.row) <= 2) {
+                this.state = W_STATE.SLEEPING;
+            } else {
+                const step = this._getBfsStep(target.col, target.row, grid);
+                if (step) this.moveTo(this.col + step.dc, this.row + step.dr, grid);
+                else this._pickRandomWalkable(grid);
+            }
+        }
+
+        _doSleep(dt) {
+            this.energy += dt * 0.05; // 초당 50 회복 (약 2초 수면)
+            if (this.energy >= this.maxEnergy) {
+                this.energy = this.maxEnergy;
+                this.state = W_STATE.IDLE;
+            }
         }
 
         // ── BFS 경로 캐시 (매 프레임 BFS 방지) ──
@@ -1126,6 +1308,8 @@
             this.eggs = [];
             this.deliveries = 0;
             this.foodChamber = null;      // {col, row} 먹이 창고 위치
+            this.nurseryChamber = null;   // {col, row} 보육방 위치
+            this.restingChamber = null;   // {col, row} 휴식방 위치
             this.storedFoodItems = [];    // 먹이 창고 시각화용
             this._eventMsg = '';
             this._eventTimer = 0;
@@ -1658,6 +1842,28 @@
             // Food on surface
             this._drawFoods(ctx, time);
 
+            // Chambers
+            const nc = this.colony.nurseryChamber;
+            if (nc) {
+                ctx.fillStyle = 'rgba(200, 100, 100, 0.15)';
+                ctx.fillRect((nc.col - 2) * CELL, (nc.row - 1) * CELL, 4 * CELL, 3 * CELL);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.textAlign = 'center';
+                ctx.font = '20px serif';
+                ctx.fillText('👶', nc.col * CELL, nc.row * CELL + 5);
+                ctx.textAlign = 'start';
+            }
+            const rc = this.colony.restingChamber;
+            if (rc) {
+                ctx.fillStyle = 'rgba(100, 100, 200, 0.15)';
+                ctx.fillRect((rc.col - 2) * CELL, (rc.row - 1) * CELL, 4 * CELL, 3 * CELL);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.textAlign = 'center';
+                ctx.font = '20px serif';
+                ctx.fillText('💤', rc.col * CELL, rc.row * CELL + 5);
+                ctx.textAlign = 'start';
+            }
+
             // Food chamber stored items
             const fc = this.colony.foodChamber;
             if (fc) {
@@ -1937,12 +2143,38 @@
                 }
             }
 
-            // Carrying food
+            // Carrying food/egg
             if (carrying) {
-                ctx.fillStyle = '#7ecf5c';
-                ctx.beginPath();
-                ctx.arc(3.5 * s, 0, 1.2 * s, 0, Math.PI * 2);
-                ctx.fill();
+                if (carrying.stage) {
+                    // Egg/Larva
+                    ctx.fillStyle = '#fffff0';
+                    ctx.beginPath();
+                    ctx.ellipse(3.5 * s, 0, 1.2 * s, 0.8 * s, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.strokeStyle = '#e0e0e0';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                } else {
+                    // Food
+                    ctx.fillStyle = '#7ecf5c';
+                    ctx.beginPath();
+                    ctx.arc(3.5 * s, 0, 1.2 * s, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // Sleep Zzz
+            if (ant.state === W_STATE.SLEEPING) {
+                const zAlpha = 0.5 + Math.sin(time * 0.005) * 0.4;
+                ctx.fillStyle = '#ffffff';
+                ctx.globalAlpha = zAlpha;
+                ctx.textAlign = 'center';
+                ctx.font = `${10 * s}px sans-serif`;
+                ctx.fillText('Z', 0, -4 * s - (time * 0.05 % 10));
+                ctx.font = `${7 * s}px sans-serif`;
+                ctx.fillText('z', 5 * s, -6 * s - ((time * 0.05 + 5) % 10));
+                ctx.globalAlpha = 1.0;
+                ctx.textAlign = 'start';
             }
 
             // Digging particles
