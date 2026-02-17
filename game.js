@@ -1148,61 +1148,128 @@
         constructor() {
             this.ctx = null;
             this.isPlaying = false;
+            this.mode = 0; // 0:Off, 1:Happy, 2:Cafe, 3:Dark
             this.masterGain = null;
-            this.ost = [];
+            this.nodes = [];
+            this.timer = null;
         }
 
         init() {
             if (!this.ctx) {
                 this.ctx = new (window.AudioContext || window.webkitAudioContext)();
                 this.masterGain = this.ctx.createGain();
-                this.masterGain.gain.value = 0.4;
+                this.masterGain.gain.value = 0.3;
                 this.masterGain.connect(this.ctx.destination);
             }
+        }
+
+        setMode(mode) {
+            this.stop(); // Stop current
+            this.mode = mode;
+            if (this.mode > 0) this.start();
         }
 
         start() {
             this.init();
             if (this.ctx.state === 'suspended') this.ctx.resume();
             this.isPlaying = true;
-            this._playDrone();
-            this._scheduleNote();
+
+            if (this.mode === 3) this._playDarkDrone(); // Dark only
+            this._scheduleNext();
         }
 
-        _playDrone() {
-            // Deep drone
+        _scheduleNext() {
+            if (!this.isPlaying) return;
+
+            let delay = 1000;
+            if (this.mode === 1) delay = this._playHappy();
+            else if (this.mode === 2) delay = this._playCafe();
+            else if (this.mode === 3) delay = this._playDark();
+
+            this.timer = setTimeout(() => this._scheduleNext(), delay);
+        }
+
+        // ─── 1. Happy: C Major Pentatonic, Fast, Bouncy ───
+        _playHappy() {
+            const notes = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50]; // C5, D5, E5, G5, A5, C6
+            const note = notes[Math.floor(Math.random() * notes.length)];
+            const time = this.ctx.currentTime;
+
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = note;
+
+            const gain = this.ctx.createGain();
+            gain.gain.setValueAtTime(0, time);
+            gain.gain.linearRampToValueAtTime(0.1, time + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.4); // Short pluck
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(time);
+            osc.stop(time + 0.5);
+            this.nodes.push(osc, gain);
+
+            // Fast tempo: 200-500ms
+            return Math.random() * 300 + 200;
+        }
+
+        // ─── 2. Cafe: Major 7th Chords, Electric Piano, Chill ───
+        _playCafe() {
+            // Root notes: C, F, G, Am
+            const roots = [261.63, 349.23, 392.00, 220.00];
+            const root = roots[Math.floor(Math.random() * roots.length)];
+
+            // Build Major 7 or Minor 7 chord
+            const isMinor = root === 220.00;
+            const third = root * (isMinor ? 1.189 : 1.259); // m3 or M3
+            const fifth = root * 1.498; // P5
+            const seventh = root * (isMinor ? 1.781 : 1.887); // m7 or M7
+
+            const chord = [root, third, fifth, seventh];
+            const time = this.ctx.currentTime;
+
+            chord.forEach((freq, i) => {
+                // Electric piano simulation (Triangle + slight detune)
+                const osc = this.ctx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.value = freq;
+
+                const gain = this.ctx.createGain();
+                const vel = 0.05 - (i * 0.005); // Lower notes louder
+                gain.gain.setValueAtTime(0, time);
+                gain.gain.linearRampToValueAtTime(vel, time + 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.001, time + 1.5);
+
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 2.0);
+                this.nodes.push(osc, gain);
+            });
+
+            // Slow tempo: 1500-3000ms
+            return Math.random() * 1500 + 1500;
+        }
+
+        // ─── 3. Dark: Drone + Minor Pentatonic (Original) ───
+        _playDarkDrone() {
             const osc = this.ctx.createOscillator();
             osc.type = 'triangle';
             osc.frequency.value = 55; // A1
             const gain = this.ctx.createGain();
             gain.gain.value = 0.15;
-
-            // LPF for underwater/underground feel
             const lpf = this.ctx.createBiquadFilter();
             lpf.type = 'lowpass';
             lpf.frequency.value = 200;
-
             osc.connect(lpf);
             lpf.connect(gain);
             gain.connect(this.masterGain);
             osc.start();
-            this.ost.push(osc);
-
-            // Higher subtle drone
-            const osc2 = this.ctx.createOscillator();
-            osc2.type = 'sine';
-            osc2.frequency.value = 110; // A2
-            const gain2 = this.ctx.createGain();
-            gain2.gain.value = 0.05;
-            osc2.connect(gain2);
-            gain2.connect(this.masterGain);
-            osc2.start();
-            this.ost.push(osc2);
+            this.nodes.push(osc, gain, lpf);
         }
 
-        _scheduleNote() {
-            if (!this.isPlaying) return;
-            // Pentatonic scale (C minor pentatonicish)
+        _playDark() {
             const notes = [196.00, 261.63, 311.13, 392.00, 523.25]; // G3, C4, Eb4, G4, C5
             const note = notes[Math.floor(Math.random() * notes.length)];
             const time = this.ctx.currentTime;
@@ -1213,10 +1280,9 @@
 
             const gain = this.ctx.createGain();
             gain.gain.setValueAtTime(0, time);
-            gain.gain.linearRampToValueAtTime(0.1, time + 2); // Slow attack
-            gain.gain.exponentialRampToValueAtTime(0.001, time + 6); // Long decay
+            gain.gain.linearRampToValueAtTime(0.1, time + 2);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 6);
 
-            // Stereo panner
             const panner = this.ctx.createStereoPanner();
             panner.pan.value = Math.random() * 2 - 1;
 
@@ -1226,14 +1292,16 @@
 
             osc.start(time);
             osc.stop(time + 6.5);
+            this.nodes.push(osc, gain, panner);
 
-            setTimeout(() => this._scheduleNote(), Math.random() * 4000 + 3000);
+            return Math.random() * 4000 + 3000;
         }
 
         stop() {
             this.isPlaying = false;
-            this.ost.forEach(o => { try { o.stop(); } catch (e) { } });
-            this.ost = [];
+            if (this.timer) clearTimeout(this.timer);
+            this.nodes.forEach(n => { try { n.stop(); } catch (e) { } try { n.disconnect(); } catch (e) { } });
+            this.nodes = [];
             if (this.ctx) this.ctx.suspend();
         }
     }
@@ -1919,15 +1987,15 @@
 
         _toggleBGM() {
             const btn = document.getElementById('btn-bgm');
-            if (this.bgm.isPlaying) {
-                this.bgm.stop();
-                btn.textContent = '🎵 OFF';
-                btn.classList.remove('active');
-            } else {
-                this.bgm.start();
-                btn.textContent = '🎵 ON';
-                btn.classList.add('active');
-            }
+            // Cycle modes: 0(OFF) -> 1(Happy) -> 2(Cafe) -> 3(Dark) -> 0
+            const nextMode = (this.bgm.mode + 1) % 4;
+            this.bgm.setMode(nextMode);
+
+            const labels = ['🎵 OFF', '😊 Happy', '☕ Cafe', '🌑 Dark'];
+            btn.textContent = labels[nextMode];
+
+            if (nextMode === 0) btn.classList.remove('active');
+            else btn.classList.add('active');
         }
     };
 
