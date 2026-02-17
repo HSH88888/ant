@@ -1222,55 +1222,112 @@
         },
 
         _rebuildGrid() {
-            // 리사이즈 시 기존 그리드 데이터 보존
+            // 리사이즈/회전 시 기존 그리드 데이터 완전 보존
             const oldGrid = this.grid;
             const newCols = Math.floor(this.width / CELL);
             const newRows = Math.floor(this.height / CELL);
+
             // 크기가 같으면 아무것도 안 함
             if (oldGrid && newCols === oldGrid.cols && newRows === oldGrid.rows) {
                 this.soilDirty = true;
                 return;
             }
+
             const newSurfaceRow = Math.floor(newRows * SURFACE_RATIO);
             const newGrid = new Grid(newCols, newRows, newSurfaceRow);
 
-            // 기존 셀 데이터 복사 (겹치는 영역)
             if (oldGrid) {
                 const copyC = Math.min(oldGrid.cols, newCols);
                 const copyR = Math.min(oldGrid.rows, newRows);
+
+                // 1) 기존 셀 전체 복사 (무조건)
                 for (let r = 0; r < copyR; r++) {
                     for (let c = 0; c < copyC; c++) {
-                        const oldVal = oldGrid.get(c, r);
-                        // 새 그리드의 지표면 위치가 달라졌으면 지하 영역만 복사
-                        if (r >= newSurfaceRow && r >= oldGrid.surfaceRow) {
-                            newGrid.set(c, r, oldVal);
-                        } else if (r < newSurfaceRow && r < oldGrid.surfaceRow) {
-                            newGrid.set(c, r, oldVal);
-                        } else if (r === newSurfaceRow) {
-                            newGrid.set(c, r, SURFACE);
+                        newGrid.set(c, r, oldGrid.get(c, r));
+                    }
+                }
+
+                // 2) 새 하늘 영역 덮어쓰기 (newSurfaceRow 위)
+                for (let r = 0; r < newSurfaceRow; r++) {
+                    for (let c = 0; c < newCols; c++) {
+                        newGrid.set(c, r, EMPTY);
+                    }
+                }
+
+                // 3) 새 지표면 행 설정
+                for (let c = 0; c < newCols; c++) {
+                    newGrid.set(c, newSurfaceRow, SURFACE);
+                }
+
+                // 4) 이전 지하 터널을 새 위치에 매핑
+                //    surfaceRow 차이만큼 오프셋 적용
+                const rowOffset = newSurfaceRow - oldGrid.surfaceRow;
+                if (rowOffset !== 0) {
+                    // 이전 지하 영역(oldSurfaceRow+1 ~ oldRows-1)을 새 위치로 복사
+                    const oldUnderStart = oldGrid.surfaceRow + 1;
+                    const oldUnderEnd = oldGrid.rows;
+                    for (let r = oldUnderStart; r < oldUnderEnd; r++) {
+                        const newR = r + rowOffset;
+                        if (newR < 0 || newR >= newRows) continue;
+                        if (newR <= newSurfaceRow) continue; // 하늘/지표면과 겹치면 건너뜀
+                        for (let c = 0; c < copyC; c++) {
+                            newGrid.set(c, newR, oldGrid.get(c, r));
+                        }
+                    }
+
+                    // 오프셋된 영역과 지표면 사이의 갭을 흙으로 채움
+                    const gapStart = newSurfaceRow + 1;
+                    const gapEnd = Math.min(oldUnderStart + rowOffset, newRows);
+                    for (let r = gapStart; r < gapEnd; r++) {
+                        for (let c = 0; c < newCols; c++) {
+                            if (newGrid.get(c, r) === EMPTY) {
+                                newGrid.set(c, r, SOIL);
+                            }
                         }
                     }
                 }
             }
+
             this.grid = newGrid;
 
-            // 개미들이 새 그리드 범위 안에 있도록 클램프
+            // 개미들이 새 그리드 범위 안에 있도록 클램프 + 오프셋
+            const rowOff = oldGrid ? (newSurfaceRow - oldGrid.surfaceRow) : 0;
             const clampAnt = (ant) => {
-                ant.col = Math.min(ant.col, newCols - 2);
-                ant.row = Math.min(ant.row, newRows - 2);
-                ant.targetCol = Math.min(ant.targetCol, newCols - 2);
-                ant.targetRow = Math.min(ant.targetRow, newRows - 2);
+                // 지하에 있었으면 오프셋 적용
+                if (oldGrid && ant.row > oldGrid.surfaceRow) {
+                    ant.row = Math.max(newSurfaceRow + 1, Math.min(ant.row + rowOff, newRows - 2));
+                    ant.targetRow = Math.max(newSurfaceRow + 1, Math.min(ant.targetRow + rowOff, newRows - 2));
+                }
+                ant.col = Math.max(0, Math.min(ant.col, newCols - 2));
+                ant.row = Math.max(0, Math.min(ant.row, newRows - 2));
+                ant.targetCol = Math.max(0, Math.min(ant.targetCol, newCols - 2));
+                ant.targetRow = Math.max(0, Math.min(ant.targetRow, newRows - 2));
                 ant.x = ant.col * CELL + CELL / 2;
                 ant.y = ant.row * CELL + CELL / 2;
                 ant.moving = false;
                 ant.digging = false;
             };
-            if (this.queen) clampAnt(this.queen);
+            if (this.queen) {
+                clampAnt(this.queen);
+                // 여왕 관련 위치 업데이트
+                if (oldGrid && this.queen.nestRow) {
+                    this.queen.nestRow = Math.max(newSurfaceRow + 1, Math.min(this.queen.nestRow + rowOff, newRows - 2));
+                }
+            }
             for (const w of this.workers) clampAnt(w);
-            // 알도 클램프
+            // 알 클램프
             for (const egg of this.colony.eggs) {
-                egg.col = Math.min(egg.col, newCols - 2);
-                egg.row = Math.min(egg.row, newRows - 2);
+                if (oldGrid && egg.row > oldGrid.surfaceRow) {
+                    egg.row = Math.max(newSurfaceRow + 1, Math.min(egg.row + rowOff, newRows - 2));
+                }
+                egg.col = Math.max(0, Math.min(egg.col, newCols - 2));
+                egg.row = Math.max(0, Math.min(egg.row, newRows - 2));
+            }
+            // 먹이 창고 위치 업데이트
+            if (this.colony.foodChamber) {
+                const fc = this.colony.foodChamber;
+                fc.row = Math.max(newSurfaceRow + 1, Math.min(fc.row + rowOff, newRows - 2));
+                fc.col = Math.max(0, Math.min(fc.col, newCols - 2));
             }
 
             this.soilDirty = true;
