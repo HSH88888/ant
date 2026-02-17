@@ -514,7 +514,7 @@
     }
 
     // ─── BFS 경로 탐색기 (터널 내비게이션) ───
-    function bfsNextStep(startCol, startRow, targetCol, targetRow, grid, maxSteps = 400) {
+    function bfsNextStep(startCol, startRow, targetCol, targetRow, grid, maxSteps = 800) {
         if (startCol === targetCol && startRow === targetRow) return null;
         const key = (c, r) => r * grid.cols + c;
         const visited = new Set();
@@ -611,16 +611,40 @@
         think(dt, grid, colony, foods, queen) {
             if (this.moving || this.digging) return;
 
-            // 스턱 감지
+            // 스턱 감지 (강화)
             if (this.col === this.prevCol && this.row === this.prevRow) {
                 this.stuckCount++;
-                if (this.stuckCount > 20) {
-                    this._pickRandomWalkable(grid);
-                    this.stuckCount = 0;
+                if (this.stuckCount > 8) {
+                    // BFS 캐시 무효화 + 랜덤 이동
                     this._pathStep = null;
+                    this._pathTarget = null;
+                    this._pathAge = 999;
+                    // 주변에 파낼 수 있는 흙이 있으면 파서 탈출
+                    const escapeDirs = [[0, -1], [1, 0], [-1, 0], [0, 1]];
+                    let escaped = false;
+                    for (const [dc, dr] of escapeDirs) {
+                        const nc = this.col + dc, nr = this.row + dr;
+                        if (grid.isDiggable(nc, nr)) {
+                            this.moveTo(nc, nr, grid);
+                            escaped = true;
+                            break;
+                        }
+                    }
+                    if (!escaped) this._pickRandomWalkable(grid);
+                    this.stuckCount = 0;
+                    // 너무 오래 고정되면 IDLE로
+                    if (this.state === W_STATE.FORAGE_TO_SURFACE || this.state === W_STATE.GUARD_PATROL) {
+                        this._stuckTotal = (this._stuckTotal || 0) + 1;
+                        if (this._stuckTotal > 5) {
+                            this.state = W_STATE.WANDER;
+                            this.waitTimer = rand(2000, 5000);
+                            this._stuckTotal = 0;
+                        }
+                    }
                 }
             } else {
                 this.stuckCount = 0;
+                this._stuckTotal = 0;
             }
             this.prevCol = this.col;
             this.prevRow = this.row;
@@ -700,11 +724,17 @@
             if (step) {
                 this.moveTo(this.col + step.dc, this.row + step.dr, grid);
             } else {
-                // BFS 실패 → 위로 파면서 올라감
+                // BFS 실패 → 입구 방향으로 파며 올라감
+                const dc = targetCol > this.col ? 1 : targetCol < this.col ? -1 : 0;
+                // 우선순위: 1)위로 걸어감 2)입구 쪽 가로 이동 3)위로 파기 4)가로 파기
                 if (grid.isWalkable(this.col, this.row - 1)) {
                     this.moveTo(this.col, this.row - 1, grid);
+                } else if (dc !== 0 && grid.isWalkable(this.col + dc, this.row)) {
+                    this.moveTo(this.col + dc, this.row, grid);
                 } else if (grid.isDiggable(this.col, this.row - 1)) {
-                    this.moveTo(this.col, this.row - 1, grid); // 파면서 올라감
+                    this.moveTo(this.col, this.row - 1, grid);
+                } else if (dc !== 0 && grid.isDiggable(this.col + dc, this.row)) {
+                    this.moveTo(this.col + dc, this.row, grid);
                 } else {
                     this._pickRandomWalkable(grid);
                 }
@@ -1034,11 +1064,22 @@
         _pickRandomWalkable(grid) {
             const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
             const shuffled = dirs.sort(() => Math.random() - 0.5);
+            // 지지력 있는 방향 우선
+            let fallbackDc = 0, fallbackDr = 0, found = false;
             for (const [dc, dr] of shuffled) {
-                if (grid.isWalkable(this.col + dc, this.row + dr)) {
-                    this.moveTo(this.col + dc, this.row + dr, grid);
-                    return true;
+                const nc = this.col + dc, nr = this.row + dr;
+                if (grid.isWalkable(nc, nr)) {
+                    if (grid.hasSupport(nc, nr)) {
+                        this.moveTo(nc, nr, grid);
+                        return true;
+                    }
+                    if (!found) { fallbackDc = dc; fallbackDr = dr; found = true; }
                 }
+            }
+            // 지지력 없어도 걸을 수 있는 곳으로
+            if (found) {
+                this.moveTo(this.col + fallbackDc, this.row + fallbackDr, grid);
+                return true;
             }
             return false;
         }
