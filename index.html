@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🐜 개미 농장 시뮬레이션</title>
+    <meta name="description" content="개미가 땅속에서 굴을 파고 방을 만드는 모습을 관찰하세요">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div id="app">
+        <header id="header">
+            <div class="logo">
+                <span class="logo-icon">🐜</span>
+                <h1>개미 농장 시뮬레이션</h1>
+            </div>
+            <div class="header-controls">
+                <button id="btn-food" class="ctrl-btn active" title="음식 놓기">🍎 음식 놓기</button>
+                <button id="btn-speed" class="ctrl-btn" title="속도 조절">⏩ x1</button>
+                <button id="btn-pause" class="ctrl-btn" title="일시정지">⏸️</button>
+            </div>
+        </header>
+
+        <main id="main">
+            <div id="farm-frame">
+                <canvas id="game-canvas"></canvas>
+            </div>
+        </main>
+
+        <footer id="hud">
+            <div class="hud-item">
+                <span class="hud-icon">👑</span>
+                <span class="hud-label">여왕</span>
+                <span class="hud-value" id="stat-queen">1</span>
+            </div>
+            <div class="hud-item phase-item">
+                <span class="hud-icon">📌</span>
+                <span class="hud-label">단계</span>
+                <span class="hud-value" id="stat-phase">착지</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">⚡</span>
+                <span class="hud-label">체내 에너지</span>
+                <span class="hud-value" id="stat-energy">100%</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">🐜</span>
+                <span class="hud-label">일개미</span>
+                <span class="hud-value" id="stat-workers">0</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">🥚</span>
+                <span class="hud-label">알</span>
+                <span class="hud-value" id="stat-eggs">0</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">🍎</span>
+                <span class="hud-label">비축 식량</span>
+                <span class="hud-value" id="stat-food">0</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">🕳️</span>
+                <span class="hud-label">터널 수</span>
+                <span class="hud-value" id="stat-tunnels">0</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-icon">⏱️</span>
+                <span class="hud-label">경과</span>
+                <span class="hud-value" id="stat-time">0:00</span>
+            </div>
+            <div id="event-msg"></div>
+        </footer>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+
+</html>

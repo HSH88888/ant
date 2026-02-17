@@ -1,0 +1,216 @@
+/* ========================================
+   개미 농장 시뮬레이션 - Design System
+   ======================================== */
+
+:root {
+    --bg-deep: #0a0806;
+    --frame-wood: #5c3a1e;
+    --frame-wood-light: #7a5230;
+    --frame-shadow: #3a2210;
+    --sky-top: #4a90c4;
+    --sky-bottom: #87CEEB;
+    --text-primary: #f0e6d3;
+    --text-secondary: #a89478;
+    --accent-gold: #c9a84c;
+    --accent-amber: #e6a817;
+    --glass-bg: rgba(15, 12, 8, 0.82);
+    --glass-border: rgba(201, 168, 76, 0.2);
+    --hud-height: 60px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Outfit', sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+}
+
+/* =========== Layout =========== */
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* =========== Header =========== */
+#header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 20px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--glass-border);
+    z-index: 10;
+    height: 48px;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.logo-icon {
+    font-size: 1.4rem;
+    animation: wiggle 2s ease-in-out infinite;
+}
+
+@keyframes wiggle {
+
+    0%,
+    100% {
+        transform: rotate(-6deg);
+    }
+
+    50% {
+        transform: rotate(6deg);
+    }
+}
+
+.logo h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--accent-gold), var(--accent-amber));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.header-controls {
+    display: flex;
+    gap: 8px;
+}
+
+.ctrl-btn {
+    background: rgba(201, 168, 76, 0.1);
+    border: 1px solid var(--glass-border);
+    color: var(--text-primary);
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.ctrl-btn:hover {
+    background: rgba(201, 168, 76, 0.25);
+    border-color: var(--accent-gold);
+    transform: translateY(-1px);
+}
+
+.ctrl-btn.active {
+    background: rgba(201, 168, 76, 0.3);
+    border-color: var(--accent-gold);
+    box-shadow: 0 0 10px rgba(201, 168, 76, 0.15);
+}
+
+/* =========== Farm Frame =========== */
+#main {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    overflow: hidden;
+}
+
+#farm-frame {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border: 6px solid var(--frame-wood);
+    border-radius: 4px;
+    box-shadow:
+        inset 0 0 8px rgba(0, 0, 0, 0.5),
+        0 4px 20px rgba(0, 0, 0, 0.6),
+        0 0 0 2px var(--frame-shadow);
+    overflow: hidden;
+    background: #1a1510;
+}
+
+#game-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+}
+
+/* =========== Bottom HUD =========== */
+#hud {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 16px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid var(--glass-border);
+    height: var(--hud-height);
+    z-index: 10;
+    overflow-x: auto;
+}
+
+.hud-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.hud-icon {
+    font-size: 0.9rem;
+}
+
+.hud-label {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.hud-value {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 20px;
+}
+
+.phase-item .hud-value {
+    color: var(--accent-amber);
+    font-size: 0.78rem;
+}
+
+#event-msg {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--accent-gold);
+    opacity: 0;
+    transition: opacity 0.3s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#event-msg.show {
+    opacity: 1;
+}
+
+/* Scrollbar */
+#hud::-webkit-scrollbar {
+    height: 3px;
+}
+
+#hud::-webkit-scrollbar-thumb {
+    background: var(--text-secondary);
+    border-radius: 2px;
+}
