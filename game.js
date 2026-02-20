@@ -5,14 +5,14 @@
     'use strict';
 
     // ─── Constants ───
-    const CELL = 4;
-    const SURFACE_RATIO = 0.12;
+    let CELL = 4;
+    const SURFACE_RATIO = 0.30;
     const FOOD_SPAWN_INTERVAL = 12000;
     const EGG_HATCH_TIME = 18000;         // 알→유충→번데기→부화
     const EGG_LAY_INTERVAL = 12000;
     const FOOD_PER_EGG = 3;
     const DIG_TIME = 400;
-    const MAX_WORKERS = 50;
+    const MAX_WORKERS = 2000;
     const QUEEN_SPEED = 0.6;
     const WORKER_SPEED = 0.9;
     const GRAVITY = 0.04;
@@ -70,6 +70,7 @@
             this.surfaceRow = surfaceRow;
             this.cells = new Uint8Array(cols * rows);
             this.noise = new Float32Array(cols * rows);
+            this.dirtyCells = [];
             this._init();
         }
         _init() {
@@ -104,7 +105,11 @@
         }
         set(c, r, v) {
             if (c < 0 || c >= this.cols || r < 0 || r >= this.rows) return;
-            this.cells[this.idx(c, r)] = v;
+            const idx = this.idx(c, r);
+            if (this.cells[idx] !== v) {
+                this.cells[idx] = v;
+                this.dirtyCells.push({c, r});
+            }
         }
         isWalkable(c, r) {
             const v = this.get(c, r);
@@ -697,11 +702,9 @@
                         this.state = W_STATE.FORAGE_TO_SURFACE;
                         break;
                     case CASTE.DIGGER:
-                        // 우선순위: Food -> Nursery -> Resting
+                        // 우선순위: Food -> Resting (Nursery는 Nurse가 담당)
                         if (!colony.foodChamber && queen.state >= Q_STATE.MATURE) {
                             this.state = W_STATE.DIG_FOOD_CHAMBER;
-                        } else if (!colony.nurseryChamber && colony.foodChamber) {
-                            this.state = W_STATE.DIG_NURSERY;
                         } else if (!colony.restingChamber && colony.nurseryChamber) {
                             this.state = W_STATE.DIG_RESTING;
                         } else {
@@ -712,7 +715,13 @@
                         }
                         break;
                     case CASTE.NURSE:
-                        // 알이 보육방 밖에 있으면 운반
+                        // 0. 보육방 건설 (식량이 확보되면)
+                        if (!colony.nurseryChamber && colony.foodChamber) {
+                            this.state = W_STATE.DIG_NURSERY;
+                            break;
+                        }
+
+                        // 1. 알이 보육방 밖에 있으면 운반
                         const unsafeEgg = colony.eggs.find(e =>
                             colony.nurseryChamber && (Math.abs(e.col - colony.nurseryChamber.col) > 4 || Math.abs(e.row - colony.nurseryChamber.row) > 4)
                         );
@@ -1570,11 +1579,14 @@
         foodSpawnTimer: FOOD_SPAWN_INTERVAL * 0.5,
         // Pre-rendered soil canvas for performance
         soilCanvas: null,
+        soilCtx: null,
         soilDirty: true,
 
         init() {
             this.canvas = document.getElementById('game-canvas');
             this.ctx = this.canvas.getContext('2d');
+            this.soilCanvas = document.createElement('canvas');
+            this.soilCtx = this.soilCanvas.getContext('2d', { alpha: true });
             this._resize();
             window.addEventListener('resize', () => {
                 this._resize();
@@ -1624,6 +1636,11 @@
             this.canvas.style.width = this.width + 'px';
             this.canvas.style.height = this.height + 'px';
             this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            if (this.soilCanvas) {
+                this.soilCanvas.width = this.width * dpr;
+                this.soilCanvas.height = this.height * dpr;
+                this.soilCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
             this.soilDirty = true;
         },
 
@@ -1843,7 +1860,7 @@
             }
 
             // Mark soil canvas dirty (tunnels change)
-            this.soilDirty = true;
+            // this.soilDirty = true; // Use partial updates through grid.dirtyCells instead
         },
 
         // ─── Render ───
@@ -1892,11 +1909,19 @@
                 ctx.stroke();
             }
 
-            // Soil
-            this._drawSoil(ctx, grid, time);
-
-            // Tunnel edges (for depth effect)
-            this._drawTunnelEdges(ctx, grid);
+            // Offscreen Canvas for Soil and Tunnels
+            if (this.soilDirty) {
+                this.soilCtx.clearRect(0, 0, this.width, this.height);
+                this._drawSoil(this.soilCtx, grid, time);
+                this._drawTunnelEdges(this.soilCtx, grid);
+                this.soilDirty = false;
+                grid.dirtyCells = [];
+            } else if (grid.dirtyCells.length > 0) {
+                this._updateDirtySoil(this.soilCtx, grid);
+            }
+            
+            // Draw pre-rendered soil on main canvas
+            ctx.drawImage(this.soilCanvas, 0, 0, this.width, this.height);
 
             // Eggs
             this._drawEggs(ctx, grid);
@@ -1988,6 +2013,66 @@
             ctx.fillRect(0, 0, W * 0.03, H);
             ctx.fillStyle = 'rgba(255, 255, 255, 0.008)';
             ctx.fillRect(W * 0.06, 0, W * 0.01, H);
+        },
+
+        _updateDirtySoil(sCtx, grid) {
+            const toUpdate = new Set();
+            for (const cell of grid.dirtyCells) {
+                toUpdate.add(`${cell.c},${cell.r}`);
+                toUpdate.add(`${cell.c - 1},${cell.r}`);
+                toUpdate.add(`${cell.c + 1},${cell.r}`);
+                toUpdate.add(`${cell.c},${cell.r - 1}`);
+                toUpdate.add(`${cell.c},${cell.r + 1}`);
+            }
+            grid.dirtyCells = [];
+
+            for (const key of toUpdate) {
+                const [c, r] = key.split(',').map(Number);
+                if (c < 0 || c >= grid.cols || r < grid.surfaceRow || r >= grid.rows) continue;
+                
+                const x = c * CELL;
+                const y = r * CELL;
+                sCtx.clearRect(x, y, CELL, CELL);
+                
+                const cellVal = grid.get(c, r);
+                if (cellVal === SOIL || cellVal === SURFACE) {
+                    const n = grid.noise[grid.idx(c, r)];
+                    sCtx.fillStyle = soilColor(r - grid.surfaceRow, grid.rows - grid.surfaceRow, n);
+                    sCtx.fillRect(x, y, CELL, CELL);
+                } else if (cellVal === BEDROCK) {
+                    const n = grid.noise[grid.idx(c, r)];
+                    sCtx.fillStyle = `rgb(${45 + n * 10}, ${40 + n * 8}, ${35 + n * 6})`;
+                    sCtx.fillRect(x, y, CELL, CELL);
+                } else if (cellVal === EMPTY && r > grid.surfaceRow) {
+                    sCtx.fillStyle = 'rgba(8, 5, 2, 0.95)';
+                    sCtx.fillRect(x, y, CELL, CELL);
+                }
+            }
+            
+            sCtx.strokeStyle = 'rgba(100, 75, 45, 0.3)';
+            sCtx.lineWidth = 0.5;
+            for (const key of toUpdate) {
+                const [c, r] = key.split(',').map(Number);
+                if (c < 0 || c >= grid.cols || r <= grid.surfaceRow || r >= grid.rows) continue;
+                if (grid.get(c, r) !== EMPTY) continue;
+                
+                const x = c * CELL;
+                const y = r * CELL;
+                sCtx.beginPath();
+                if (grid.get(c - 1, r) === SOIL || grid.get(c - 1, r) === BEDROCK) {
+                    sCtx.moveTo(x, y); sCtx.lineTo(x, y + CELL);
+                }
+                if (grid.get(c + 1, r) === SOIL || grid.get(c + 1, r) === BEDROCK) {
+                    sCtx.moveTo(x + CELL, y); sCtx.lineTo(x + CELL, y + CELL);
+                }
+                if (grid.get(c, r - 1) === SOIL) {
+                    sCtx.moveTo(x, y); sCtx.lineTo(x + CELL, y);
+                }
+                if (grid.get(c, r + 1) === SOIL || grid.get(c, r + 1) === BEDROCK) {
+                    sCtx.moveTo(x, y + CELL); sCtx.lineTo(x + CELL, y + CELL);
+                }
+                sCtx.stroke();
+            }
         },
 
         _drawCloud(ctx, x, y, size) {
@@ -2309,5 +2394,44 @@
         }
     };
 
-    window.addEventListener('DOMContentLoaded', () => game.init());
+    window.addEventListener('DOMContentLoaded', () => {
+        const startScreen = document.getElementById('start-screen');
+        const buttons = document.querySelectorAll('.btn-size');
+
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const size = btn.dataset.size;
+                const container = document.getElementById('farm-frame');
+
+                // Reset classes
+                container.classList.remove('map-size-small', 'map-size-medium', 'map-size-large');
+
+                // Map size logic:
+                // Apply CSS class to resize the container
+                // CELL size remains constant (4) so that smaller container = fewer cells
+                CELL = 4;
+
+                if (size === 'small') {
+                    container.classList.add('map-size-small');
+                }
+                else if (size === 'medium') {
+                    container.classList.add('map-size-medium');
+                }
+                else if (size === 'large') {
+                    container.classList.add('map-size-large');
+                }
+
+                // Resume audio context
+                if (game.bgm && game.bgm.ctx) {
+                    game.bgm.ctx.resume();
+                }
+
+                startScreen.classList.add('hidden');
+                setTimeout(() => {
+                    startScreen.style.display = 'none';
+                    game.init();
+                }, 500);
+            });
+        });
+    });
 })();
